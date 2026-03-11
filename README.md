@@ -31,13 +31,13 @@ Your file system organizes by folders. Your brain organizes by meaning. DeepFind
 
 ## Supported file types
 
-| Type | Extensions |
-|------|-----------|
-| Text | `.txt` `.md` `.json` `.csv` `.tsx` `.ts` `.js` `.py` `.html` `.css` `.yml` `.yaml` `.toml` `.xml` |
-| Images | `.png` `.jpg` `.jpeg` `.gif` `.webp` `.bmp` |
-| Audio | `.mp3` `.wav` `.ogg` `.flac` `.m4a` |
-| Video | `.mp4` `.mov` `.webm` `.avi` |
-| Documents | `.pdf` |
+| Type | Extensions | Limits |
+|------|-----------|--------|
+| Text | `.txt` `.md` `.json` `.csv` `.tsx` `.ts` `.js` `.py` `.html` `.css` `.yml` `.yaml` `.toml` `.xml` `.rs` `.go` `.java` `.rb` `.sh` | 8192 tokens max |
+| Images | `.png` `.jpg` `.jpeg` | Max 6 per request |
+| Audio | `.mp3` `.wav` | Max 80 seconds |
+| Video | `.mp4` `.mpeg` | Max 80s (with audio) / 120s (without) |
+| Documents | `.pdf` | Max 6 pages |
 
 ## Getting started
 

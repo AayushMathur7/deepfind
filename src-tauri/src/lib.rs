@@ -11,11 +11,16 @@ pub struct FileInfo {
 }
 
 const SUPPORTED_EXTENSIONS: &[&str] = &[
+    // Text
     "txt", "md", "json", "csv", "tsx", "ts", "js", "py", "html", "css",
-    "yml", "yaml", "toml", "xml", "svg",
-    "png", "jpg", "jpeg", "gif", "webp", "bmp",
-    "mp3", "wav", "ogg", "flac", "m4a",
-    "mp4", "mov", "webm", "avi",
+    "yml", "yaml", "toml", "xml", "svg", "rs", "go", "java", "rb", "sh",
+    // Images (PNG, JPEG only per Gemini Embedding 2 docs)
+    "png", "jpg", "jpeg",
+    // Audio (MP3, WAV only per docs)
+    "mp3", "wav",
+    // Video (MP4, MPEG only per docs)
+    "mp4", "mpeg",
+    // Documents
     "pdf",
 ];
 
