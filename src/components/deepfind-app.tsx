@@ -13,8 +13,17 @@ import {
   Settings,
   X,
   Trash2,
+  Sparkles,
+  ArrowRight,
+  KeyRound,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
+import { Button } from "@/components/ui/button";
+import { Card, CardContent } from "@/components/ui/card";
+import { Input } from "@/components/ui/input";
+import { Badge } from "@/components/ui/badge";
+import { ScrollArea } from "@/components/ui/scroll-area";
+import { Separator } from "@/components/ui/separator";
 import {
   type FileEntry,
   getFileType,
@@ -24,12 +33,12 @@ import {
 import { saveIndex, loadIndex, clearIndex } from "@/lib/storage";
 
 const TYPE_ICON: Record<FileEntry["type"], React.ReactNode> = {
-  text: <FileText className="size-3.5" />,
-  image: <Image className="size-3.5" />,
-  audio: <Music className="size-3.5" />,
-  video: <Video className="size-3.5" />,
-  pdf: <FileText className="size-3.5" />,
-  unknown: <File className="size-3.5" />,
+  text: <FileText className="size-4" />,
+  image: <Image className="size-4" />,
+  audio: <Music className="size-4" />,
+  video: <Video className="size-4" />,
+  pdf: <FileText className="size-4" />,
+  unknown: <File className="size-4" />,
 };
 
 const TYPE_COLOR: Record<FileEntry["type"], string> = {
@@ -39,6 +48,15 @@ const TYPE_COLOR: Record<FileEntry["type"], string> = {
   video: "text-orange-400",
   pdf: "text-red-400",
   unknown: "text-zinc-500",
+};
+
+const TYPE_BG: Record<FileEntry["type"], string> = {
+  text: "bg-blue-500/10",
+  image: "bg-pink-500/10",
+  audio: "bg-violet-500/10",
+  video: "bg-orange-500/10",
+  pdf: "bg-red-500/10",
+  unknown: "bg-zinc-500/10",
 };
 
 function formatSize(bytes: number): string {
@@ -59,8 +77,10 @@ export function DeepFindApp() {
   const [isSearching, setIsSearching] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const searchInputRef = useRef<HTMLInputElement>(null);
 
   const embeddedCount = useMemo(() => files.filter((f) => f.embedding).length, [files]);
+  const hasResults = results && results.length > 0;
 
   useEffect(() => {
     const saved = loadIndex();
@@ -117,13 +137,14 @@ export function DeepFindApp() {
         try {
           if (fileType === "text") {
             const text = await file.text();
-            entry.embedding = await embedText(ai, text.slice(0, 8000));
+            entry.embedding = await embedText(ai, text.slice(0, 8000), "retrieval_document");
           } else {
             const bytes = new Uint8Array(await file.arrayBuffer());
             entry.embedding = await embedFile(ai, bytes, mimeType);
           }
         } catch (err) {
           console.warn(`Failed: ${file.name}`, err);
+          entry.error = err instanceof Error ? err.message : "Unknown error";
         }
 
         newFiles.push(entry);
@@ -168,7 +189,7 @@ export function DeepFindApp() {
   }, []);
 
   return (
-    <main className="flex h-dvh w-full flex-col items-center bg-background">
+    <main className="flex h-dvh w-full flex-col bg-background">
       <input
         ref={fileInputRef}
         type="file"
@@ -179,186 +200,279 @@ export function DeepFindApp() {
         onChange={addFiles}
       />
 
-      {/* Center content */}
+      {/* Main layout */}
       <div className={cn(
-        "flex w-full max-w-2xl flex-col px-5 transition-all duration-500",
-        results || isIndexing ? "pt-8" : "flex-1 justify-center"
+        "mx-auto flex w-full max-w-2xl flex-col transition-all duration-500 ease-out",
+        hasResults || isIndexing ? "pt-6" : "flex-1 justify-center pt-0"
       )}>
-        {/* Logo */}
-        <h1 className={cn(
-          "font-semibold tracking-tight transition-all duration-500",
-          results || isIndexing ? "mb-4 text-lg" : "mb-6 text-center text-3xl"
+        {/* Header */}
+        <div className={cn(
+          "px-6 transition-all duration-500",
+          hasResults || isIndexing ? "mb-4" : "mb-8"
         )}>
-          <span className="text-cyan-400">Deep</span>Find
-        </h1>
-
-        {/* Search bar */}
-        <div className="relative">
-          <input
-            type="text"
-            value={query}
-            onChange={(e) => setQuery(e.target.value)}
-            onKeyDown={(e) => { if (e.key === "Enter") search(); }}
-            placeholder={embeddedCount > 0 ? `Search across ${embeddedCount} files by meaning...` : "Add a folder to start..."}
-            disabled={embeddedCount === 0 || isSearching}
-            className={cn(
-              "h-12 w-full rounded-xl border border-border bg-secondary/30 pl-11 pr-24 text-sm backdrop-blur-sm",
-              "placeholder:text-muted-foreground/50",
-              "focus:border-cyan-500/40 focus:outline-none focus:ring-1 focus:ring-cyan-500/20",
-              embeddedCount === 0 && "cursor-not-allowed opacity-50"
-            )}
-          />
-          <Search className="absolute left-4 top-4 size-4 text-muted-foreground/50" />
-
-          {/* Right side buttons */}
-          <div className="absolute right-2 top-1.5 flex items-center gap-1">
-            {isSearching && <Loader2 className="size-4 animate-spin text-cyan-500 mr-1" />}
-
-            <button
-              onClick={() => fileInputRef.current?.click()}
-              disabled={isIndexing}
-              className="rounded-lg p-2 text-muted-foreground hover:bg-secondary hover:text-foreground transition-colors"
-              title="Add folder"
-            >
-              {isIndexing ? <Loader2 className="size-4 animate-spin" /> : <FolderOpen className="size-4" />}
-            </button>
-
-            {files.length > 0 && (
-              <button
-                onClick={clearAll}
-                className="rounded-lg p-2 text-muted-foreground hover:text-destructive transition-colors"
-                title="Clear index"
-              >
-                <Trash2 className="size-4" />
-              </button>
-            )}
-
-            <button
-              onClick={() => setShowSettings(!showSettings)}
-              className="rounded-lg p-2 text-muted-foreground hover:bg-secondary hover:text-foreground transition-colors"
-              title="Settings"
-            >
-              <Settings className="size-4" />
-            </button>
-          </div>
-        </div>
-
-        {/* Settings dropdown */}
-        {showSettings && (
-          <div className="mt-2 rounded-xl border border-border bg-secondary/30 p-3 backdrop-blur-sm">
+          {/* Logo + tagline */}
+          <div className={cn(
+            "flex items-center gap-3 transition-all duration-500",
+            hasResults || isIndexing ? "mb-3" : "mb-5 justify-center"
+          )}>
             <div className="flex items-center gap-2">
-              <input
-                type="password"
-                value={apiKey}
-                onChange={(e) => setApiKey(e.target.value)}
-                onKeyDown={(e) => { if (e.key === "Enter") saveKey(); }}
-                placeholder="Gemini API key (AIza...)"
-                className="h-8 flex-1 rounded-lg border border-input bg-background px-3 text-xs focus:border-cyan-500/40 focus:outline-none"
-              />
-              <button
-                onClick={saveKey}
-                className="h-8 rounded-lg bg-cyan-700 px-3 text-xs font-medium text-white hover:bg-cyan-800"
+              <div className="flex size-8 items-center justify-center rounded-lg bg-cyan-500/10">
+                <Sparkles className="size-4 text-cyan-400" />
+              </div>
+              <h1 className="text-xl font-semibold tracking-tight">
+                <span className="text-cyan-400">Deep</span><span className="text-foreground">Find</span>
+              </h1>
+            </div>
+
+            {!(hasResults || isIndexing) && (
+              <Badge variant="outline" className="text-[10px] font-normal text-muted-foreground">
+                Gemini Embedding 2
+              </Badge>
+            )}
+          </div>
+
+          {/* Subtitle — only when centered */}
+          {!(hasResults || isIndexing) && (
+            <p className="mb-6 text-center text-sm text-muted-foreground/70">
+              Search your files by meaning, not filename
+            </p>
+          )}
+
+          {/* Search bar */}
+          <Card className="border-border/50 bg-secondary/20 shadow-lg backdrop-blur-sm">
+            <CardContent className="p-1.5">
+              <div className="flex items-center gap-1">
+                <div className="relative flex-1">
+                  <Search className="absolute left-3 top-1/2 size-4 -translate-y-1/2 text-muted-foreground/40" />
+                  <Input
+                    ref={searchInputRef}
+                    type="text"
+                    value={query}
+                    onChange={(e) => setQuery(e.target.value)}
+                    onKeyDown={(e) => { if (e.key === "Enter") search(); }}
+                    placeholder={embeddedCount > 0 ? `Search ${embeddedCount} files by meaning...` : "Index a folder to start searching"}
+                    disabled={embeddedCount === 0 || isSearching}
+                    className="h-10 border-0 bg-transparent pl-10 text-sm shadow-none focus-visible:ring-0"
+                  />
+                </div>
+
+                <Separator orientation="vertical" className="h-6" />
+
+                <Button
+                  variant="ghost"
+                  size="icon-sm"
+                  onClick={() => fileInputRef.current?.click()}
+                  disabled={isIndexing}
+                  title="Add folder"
+                >
+                  {isIndexing ? <Loader2 className="size-4 animate-spin text-cyan-500" /> : <FolderOpen className="size-4" />}
+                </Button>
+
+                {files.length > 0 && (
+                  <Button
+                    variant="ghost"
+                    size="icon-sm"
+                    onClick={clearAll}
+                    title="Clear index"
+                    className="text-muted-foreground hover:text-destructive"
+                  >
+                    <Trash2 className="size-4" />
+                  </Button>
+                )}
+
+                <Button
+                  variant="ghost"
+                  size="icon-sm"
+                  onClick={() => setShowSettings(!showSettings)}
+                  title="API key settings"
+                  className={cn(showSettings && "bg-secondary")}
+                >
+                  <KeyRound className="size-4" />
+                </Button>
+              </div>
+            </CardContent>
+          </Card>
+
+          {/* Settings dropdown */}
+          {showSettings && (
+            <Card className="mt-2 border-border/50 bg-secondary/20 backdrop-blur-sm">
+              <CardContent className="p-3">
+                <div className="flex items-center gap-2">
+                  <Input
+                    type="password"
+                    value={apiKey}
+                    onChange={(e) => setApiKey(e.target.value)}
+                    onKeyDown={(e) => { if (e.key === "Enter") saveKey(); }}
+                    placeholder="Gemini API key (AIza...)"
+                    className="h-8 flex-1 text-xs"
+                  />
+                  <Button size="sm" onClick={saveKey} className="bg-cyan-700 hover:bg-cyan-800">
+                    Save
+                  </Button>
+                  <Button variant="ghost" size="icon-sm" onClick={() => setShowSettings(false)}>
+                    <X className="size-3.5" />
+                  </Button>
+                </div>
+                <p className="mt-2 text-[10px] leading-relaxed text-muted-foreground">
+                  Get a free key at{" "}
+                  <a href="https://aistudio.google.com/apikey" target="_blank" rel="noopener noreferrer" className="text-cyan-400 underline-offset-2 hover:underline">
+                    aistudio.google.com
+                  </a>
+                  . Stored locally — only sent to Google&apos;s API.
+                </p>
+              </CardContent>
+            </Card>
+          )}
+
+          {/* Progress bar */}
+          {isIndexing && (
+            <div className="mt-3 px-1">
+              <div className="flex items-center justify-between mb-1.5">
+                <span className="text-[11px] text-muted-foreground">Indexing files...</span>
+                <span className="text-[11px] font-medium text-cyan-400">{Math.round(progress)}%</span>
+              </div>
+              <div className="h-1.5 w-full overflow-hidden rounded-full bg-secondary">
+                <div
+                  className="h-full rounded-full bg-gradient-to-r from-cyan-600 to-cyan-400 transition-all duration-300"
+                  style={{ width: `${progress}%` }}
+                />
+              </div>
+              <p className="mt-1 text-[10px] text-muted-foreground/50 truncate">{progressFile}</p>
+            </div>
+          )}
+
+          {/* Empty state stats */}
+          {!(hasResults || isIndexing) && embeddedCount > 0 && (
+            <div className="mt-3 flex justify-center">
+              <Badge variant="secondary" className="text-[10px] font-normal">
+                {embeddedCount} files ready to search
+              </Badge>
+            </div>
+          )}
+
+          {/* Empty state CTA */}
+          {!(hasResults || isIndexing) && embeddedCount === 0 && !showSettings && (
+            <div className="mt-8 flex flex-col items-center">
+              <Button
+                variant="outline"
+                size="lg"
+                onClick={() => fileInputRef.current?.click()}
+                className="gap-2 border-dashed"
               >
-                Save
-              </button>
-              <button onClick={() => setShowSettings(false)} className="p-1 text-muted-foreground hover:text-foreground">
-                <X className="size-3.5" />
-              </button>
+                <FolderOpen className="size-4" />
+                Choose a folder to index
+                <ArrowRight className="size-4 text-muted-foreground" />
+              </Button>
+              <div className="mt-6 flex items-center gap-6 text-[10px] text-muted-foreground/40">
+                <span className="flex items-center gap-1"><FileText className="size-3" /> Docs</span>
+                <span className="flex items-center gap-1"><Image className="size-3" /> Images</span>
+                <span className="flex items-center gap-1"><Music className="size-3" /> Audio</span>
+                <span className="flex items-center gap-1"><Video className="size-3" /> Video</span>
+                <span className="flex items-center gap-1"><FileText className="size-3" /> PDFs</span>
+              </div>
             </div>
-            <p className="mt-1.5 text-[10px] text-muted-foreground">
-              Free key at{" "}
-              <a href="https://aistudio.google.com/apikey" target="_blank" rel="noopener noreferrer" className="underline hover:text-foreground">
-                aistudio.google.com/apikey
-              </a>
-              {" "}— stored locally, only sent to Google.
-            </p>
-          </div>
-        )}
+          )}
 
-        {/* Progress */}
-        {isIndexing && (
-          <div className="mt-3">
-            <div className="h-1 w-full overflow-hidden rounded-full bg-secondary">
-              <div className="h-full rounded-full bg-cyan-500 transition-all duration-300" style={{ width: `${progress}%` }} />
-            </div>
-            <p className="mt-1 text-[10px] text-muted-foreground truncate">
-              Embedding {Math.round(progress)}% — {progressFile}
-            </p>
-          </div>
-        )}
-
-        {/* Subtitle when empty */}
-        {!results && !isIndexing && embeddedCount === 0 && (
-          <p className="mt-3 text-center text-xs text-muted-foreground/50">
-            Search your files by meaning, not filename. Powered by Gemini Embedding 2.
-          </p>
-        )}
-        {!results && !isIndexing && embeddedCount > 0 && (
-          <p className="mt-2 text-center text-[11px] text-muted-foreground/40">
-            {embeddedCount} files indexed
-          </p>
-        )}
-
-        {/* Error */}
-        {error && (
-          <div className="mt-3 flex items-center gap-2 rounded-lg border border-destructive/30 bg-destructive/5 px-3 py-2">
-            <p className="flex-1 text-xs text-destructive">{error}</p>
-            <button onClick={() => setError(null)} className="text-destructive/50 hover:text-destructive">
-              <X className="size-3.5" />
-            </button>
-          </div>
-        )}
+          {/* Error */}
+          {error && (
+            <Card className="mt-3 border-destructive/30 bg-destructive/5">
+              <CardContent className="flex items-center gap-2 px-3 py-2">
+                <p className="flex-1 text-xs text-destructive">{error}</p>
+                <Button variant="ghost" size="icon-sm" onClick={() => setError(null)} className="text-destructive/50 hover:text-destructive">
+                  <X className="size-3.5" />
+                </Button>
+              </CardContent>
+            </Card>
+          )}
+        </div>
       </div>
 
-      {/* Search results */}
-      {results && (
-        <div className="w-full max-w-2xl flex-1 overflow-y-auto px-5 pb-8">
-          <div className="mb-3 flex items-center justify-between">
-            <span className="text-[11px] text-muted-foreground">
-              {results.length} results
+      {/* Results — scrollable area below */}
+      {hasResults && (
+        <div className="mx-auto w-full max-w-2xl flex-1 overflow-hidden px-6">
+          <div className="mb-2 flex items-center justify-between">
+            <span className="text-[11px] font-medium text-muted-foreground">
+              {results.length} results for &ldquo;<span className="text-foreground">{query}</span>&rdquo;
             </span>
-            <button
-              onClick={() => { setResults(null); setQuery(""); }}
-              className="text-[11px] text-muted-foreground hover:text-foreground"
-            >
+            <Button variant="ghost" size="xs" onClick={() => { setResults(null); setQuery(""); }}>
               Clear
-            </button>
+            </Button>
           </div>
 
-          <div className="space-y-1">
-            {results.map((file) => (
-              <div
-                key={file.id}
-                className="group flex items-center gap-3 rounded-lg px-3 py-2.5 transition-colors hover:bg-secondary/30"
-              >
-                {/* Icon */}
-                <span className={cn("shrink-0", TYPE_COLOR[file.type])}>
-                  {TYPE_ICON[file.type]}
-                </span>
+          <ScrollArea className="h-full pb-6">
+            <div className="space-y-1.5 pb-8">
+              {results.map((file, i) => (
+                <Card
+                  key={file.id}
+                  className={cn(
+                    "border-border/30 bg-card/50 transition-all hover:bg-secondary/30",
+                    i === 0 && "border-cyan-500/20 bg-cyan-500/[0.03]"
+                  )}
+                >
+                  <CardContent className="flex items-center gap-3 px-4 py-3">
+                    {/* Rank */}
+                    <span className={cn(
+                      "flex size-6 shrink-0 items-center justify-center rounded-md text-[10px] font-semibold",
+                      i === 0 ? "bg-cyan-500/15 text-cyan-400" : "bg-secondary text-muted-foreground"
+                    )}>
+                      {i + 1}
+                    </span>
 
-                {/* File info */}
-                <div className="min-w-0 flex-1">
-                  <p className="truncate text-sm">{file.name}</p>
-                  <p className="truncate text-[10px] text-muted-foreground/50">{file.path}</p>
-                </div>
+                    {/* File type icon */}
+                    <div className={cn(
+                      "flex size-9 shrink-0 items-center justify-center rounded-lg",
+                      TYPE_BG[file.type],
+                      TYPE_COLOR[file.type]
+                    )}>
+                      {TYPE_ICON[file.type]}
+                    </div>
 
-                {/* Score */}
-                <div className="flex items-center gap-2 shrink-0">
-                  <div className="h-1 w-12 overflow-hidden rounded-full bg-secondary">
-                    <div
-                      className="h-full rounded-full bg-cyan-500/70"
-                      style={{ width: `${Math.max(file.score * 100, 5)}%` }}
-                    />
-                  </div>
-                  <span className="w-8 text-right text-[11px] font-medium text-cyan-400/80">
-                    {(file.score * 100).toFixed(0)}%
-                  </span>
-                </div>
-              </div>
-            ))}
-          </div>
+                    {/* File info */}
+                    <div className="min-w-0 flex-1">
+                      <p className="truncate text-sm font-medium">{file.name}</p>
+                      <p className="truncate text-[11px] text-muted-foreground/50">
+                        {file.path}
+                        <span className="mx-1 opacity-30">·</span>
+                        {formatSize(file.size)}
+                      </p>
+                    </div>
+
+                    {/* Similarity score */}
+                    <div className="flex flex-col items-end gap-1 shrink-0">
+                      <span className={cn(
+                        "text-sm font-semibold tabular-nums",
+                        file.score > 0.8 ? "text-cyan-400" :
+                        file.score > 0.5 ? "text-foreground/80" :
+                        "text-muted-foreground"
+                      )}>
+                        {(file.score * 100).toFixed(0)}%
+                      </span>
+                      <div className="h-1 w-16 overflow-hidden rounded-full bg-secondary">
+                        <div
+                          className={cn(
+                            "h-full rounded-full transition-all",
+                            file.score > 0.8 ? "bg-cyan-500" :
+                            file.score > 0.5 ? "bg-foreground/30" :
+                            "bg-muted-foreground/20"
+                          )}
+                          style={{ width: `${Math.max(file.score * 100, 3)}%` }}
+                        />
+                      </div>
+                    </div>
+                  </CardContent>
+                </Card>
+              ))}
+            </div>
+          </ScrollArea>
         </div>
       )}
+
+      {/* Footer */}
+      <footer className="border-t border-border/50 px-6 py-2.5">
+        <p className="text-center text-[10px] text-muted-foreground/30">
+          Your files stay local — only embeddings are generated via Google&apos;s Gemini API
+        </p>
+      </footer>
     </main>
   );
 }
