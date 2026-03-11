@@ -14,18 +14,16 @@ import {
   Settings,
   X,
   Eye,
+  ArrowRight,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import {
   type FileEntry,
   getFileType,
   getMimeType,
-  cosineSimilarity,
   searchByEmbedding,
 } from "@/lib/embeddings";
-import { projectUMAP2D } from "@/lib/umap";
 import { saveIndex, loadIndex, clearIndex } from "@/lib/storage";
-import { EmbeddingMap } from "./embedding-map";
 
 const FILE_TYPE_ICONS: Record<FileEntry["type"], React.ReactNode> = {
   text: <FileText className="size-4" />,
@@ -45,22 +43,26 @@ const FILE_TYPE_COLORS: Record<FileEntry["type"], string> = {
   unknown: "#9ca3af",
 };
 
+function formatSize(bytes: number): string {
+  if (bytes < 1024) return `${bytes} B`;
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
+  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+}
+
 export function DeepFindApp() {
   const [apiKey, setApiKey] = useState("");
   const [showSettings, setShowSettings] = useState(false);
   const [files, setFiles] = useState<FileEntry[]>([]);
   const [isIndexing, setIsIndexing] = useState(false);
   const [progress, setProgress] = useState(0);
+  const [progressFile, setProgressFile] = useState("");
   const [searchQuery, setSearchQuery] = useState("");
   const [searchResults, setSearchResults] = useState<
     Array<FileEntry & { score: number }> | null
   >(null);
   const [isSearching, setIsSearching] = useState(false);
-  const [selectedFile, setSelectedFile] = useState<FileEntry | null>(null);
-  const [umapPoints, setUmapPoints] = useState<
-    Array<{ x: number; y: number }>
-  >([]);
   const [error, setError] = useState<string | null>(null);
+  const [stats, setStats] = useState({ total: 0, embedded: 0, failed: 0 });
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   // Load saved index on mount
@@ -68,32 +70,16 @@ export function DeepFindApp() {
     const saved = loadIndex();
     if (saved.length > 0) {
       setFiles(saved);
-      recomputeUMAP(saved);
+      setStats({
+        total: saved.length,
+        embedded: saved.filter((f) => f.embedding).length,
+        failed: saved.filter((f) => !f.embedding).length,
+      });
     }
     const savedKey = localStorage.getItem("deepfind_api_key") ?? "";
     if (savedKey) setApiKey(savedKey);
     else setShowSettings(true);
   }, []);
-
-  function recomputeUMAP(entries: FileEntry[]) {
-    const withEmbeddings = entries.filter((f) => f.embedding);
-    if (withEmbeddings.length < 2) {
-      setUmapPoints([]);
-      return;
-    }
-    const embeddings = withEmbeddings.map((f) => f.embedding!);
-    const points = projectUMAP2D(embeddings);
-    setUmapPoints(points);
-
-    // Update file entries with UMAP coords
-    const updated = entries.map((f) => {
-      if (!f.embedding) return f;
-      const idx = withEmbeddings.indexOf(f);
-      if (idx === -1) return f;
-      return { ...f, umapX: points[idx].x, umapY: points[idx].y };
-    });
-    setFiles(updated);
-  }
 
   const handleSaveApiKey = useCallback(() => {
     localStorage.setItem("deepfind_api_key", apiKey);
@@ -101,7 +87,7 @@ export function DeepFindApp() {
     setError(null);
   }, [apiKey]);
 
-  const handleFileSelect = useCallback(async () => {
+  const handleFileSelect = useCallback(() => {
     fileInputRef.current?.click();
   }, []);
 
@@ -122,15 +108,20 @@ export function DeepFindApp() {
       setProgress(0);
 
       const { GoogleGenAI } = await import("@google/genai");
-      const client = new GoogleGenAI({ apiKey: key });
+      const { embedText, embedFile } = await import("@/lib/embeddings");
+      const ai = new GoogleGenAI({ apiKey: key });
 
       const newFiles: FileEntry[] = [];
       const total = selectedFiles.length;
+      let embedded = 0;
+      let failed = 0;
 
       for (let i = 0; i < total; i++) {
         const file = selectedFiles[i];
         const fileType = getFileType(file.name);
         const mimeType = getMimeType(file.name);
+
+        setProgressFile(file.name);
 
         const entry: FileEntry = {
           id: crypto.randomUUID(),
@@ -140,35 +131,56 @@ export function DeepFindApp() {
           size: file.size,
         };
 
+        // Skip files that are too large (>20MB for binary, >50KB for text)
+        const maxSize = fileType === "text" ? 50 * 1024 : 20 * 1024 * 1024;
+        if (file.size > maxSize) {
+          failed++;
+          newFiles.push(entry);
+          setProgress(((i + 1) / total) * 100);
+          continue;
+        }
+
+        // Skip unsupported types
+        if (fileType === "unknown") {
+          newFiles.push(entry);
+          setProgress(((i + 1) / total) * 100);
+          continue;
+        }
+
         try {
           if (fileType === "text") {
             const text = await file.text();
             const truncated = text.slice(0, 8000);
-            const { embedText } = await import("@/lib/embeddings");
-            entry.embedding = await embedText(client, truncated);
-          } else if (
-            fileType === "image" ||
-            fileType === "audio" ||
-            fileType === "video" ||
-            fileType === "pdf"
-          ) {
+            entry.embedding = await embedText(ai, truncated);
+          } else {
             const bytes = new Uint8Array(await file.arrayBuffer());
-            const { embedFile } = await import("@/lib/embeddings");
-            entry.embedding = await embedFile(client, bytes, mimeType);
+            entry.embedding = await embedFile(ai, bytes, mimeType);
           }
+          embedded++;
         } catch (err) {
           console.warn(`Failed to embed ${file.name}:`, err);
+          failed++;
         }
 
         newFiles.push(entry);
         setProgress(((i + 1) / total) * 100);
+
+        // Small delay to avoid rate limiting
+        if (i < total - 1) {
+          await new Promise((r) => setTimeout(r, 100));
+        }
       }
 
       const combined = [...files, ...newFiles];
       setFiles(combined);
       saveIndex(combined);
-      recomputeUMAP(combined);
+      setStats({
+        total: combined.length,
+        embedded: combined.filter((f) => f.embedding).length,
+        failed: combined.filter((f) => !f.embedding).length,
+      });
       setIsIndexing(false);
+      setProgressFile("");
 
       // Reset file input
       if (fileInputRef.current) fileInputRef.current.value = "";
@@ -197,14 +209,12 @@ export function DeepFindApp() {
     try {
       const { GoogleGenAI } = await import("@google/genai");
       const { embedText } = await import("@/lib/embeddings");
-      const client = new GoogleGenAI({ apiKey: key });
-      const queryEmbedding = await embedText(client, searchQuery);
+      const ai = new GoogleGenAI({ apiKey: key });
+      const queryEmbedding = await embedText(ai, searchQuery);
       const results = searchByEmbedding(queryEmbedding, embeddedFiles, 20);
       setSearchResults(results);
     } catch (err) {
-      setError(
-        err instanceof Error ? err.message : "Search failed."
-      );
+      setError(err instanceof Error ? err.message : "Search failed.");
     } finally {
       setIsSearching(false);
     }
@@ -213,8 +223,7 @@ export function DeepFindApp() {
   const handleClear = useCallback(() => {
     setFiles([]);
     setSearchResults(null);
-    setUmapPoints([]);
-    setSelectedFile(null);
+    setStats({ total: 0, embedded: 0, failed: 0 });
     clearIndex();
   }, []);
 
@@ -223,27 +232,30 @@ export function DeepFindApp() {
     [files]
   );
 
-  const filesWithCoords = useMemo(
-    () => files.filter((f) => f.umapX !== undefined),
-    [files]
-  );
-
   return (
     <main className="flex h-dvh w-full flex-col overflow-hidden bg-background">
       {/* Header */}
-      <header className="flex items-center justify-between border-b border-border px-4 py-3">
+      <header className="flex items-center justify-between border-b border-border px-5 py-3">
         <div className="flex items-center gap-3">
-          <h1 className="text-lg font-semibold tracking-tight">
+          <h1 className="text-xl font-semibold tracking-tight">
             <span className="text-cyan-400">Deep</span>Find
           </h1>
-          <span className="rounded-full border border-border bg-secondary/50 px-2 py-0.5 text-[10px] text-muted-foreground">
-            Gemini Embedding 2
+          <span className="rounded-full border border-border bg-secondary/50 px-2.5 py-0.5 text-[10px] text-muted-foreground">
+            Powered by Gemini Embedding 2
           </span>
         </div>
-        <div className="flex items-center gap-2">
-          <span className="text-xs text-muted-foreground">
-            {embeddedCount} files indexed
-          </span>
+        <div className="flex items-center gap-3">
+          {stats.total > 0 && (
+            <div className="flex items-center gap-2 text-xs text-muted-foreground">
+              <span className="text-cyan-400 font-medium">{stats.embedded}</span> embedded
+              {stats.failed > 0 && (
+                <>
+                  <span className="opacity-40">·</span>
+                  <span className="text-destructive">{stats.failed}</span> failed
+                </>
+              )}
+            </div>
+          )}
           <button
             onClick={() => setShowSettings(!showSettings)}
             className="rounded-md p-1.5 text-muted-foreground hover:bg-secondary hover:text-foreground transition-colors"
@@ -255,8 +267,8 @@ export function DeepFindApp() {
 
       {/* Settings panel */}
       {showSettings && (
-        <div className="border-b border-border bg-secondary/30 px-4 py-3">
-          <div className="flex items-center gap-2">
+        <div className="border-b border-border bg-secondary/30 px-5 py-3">
+          <div className="flex items-center gap-2 max-w-2xl">
             <label className="text-xs text-muted-foreground whitespace-nowrap">
               Gemini API Key:
             </label>
@@ -265,11 +277,11 @@ export function DeepFindApp() {
               value={apiKey}
               onChange={(e) => setApiKey(e.target.value)}
               placeholder="AIza..."
-              className="h-8 flex-1 rounded-md border border-input bg-background px-2 text-xs"
+              className="h-8 flex-1 rounded-md border border-input bg-background px-3 text-xs focus:border-cyan-500/50 focus:outline-none"
             />
             <button
               onClick={handleSaveApiKey}
-              className="h-8 rounded-md bg-cyan-700 px-3 text-xs text-white hover:bg-cyan-800 transition-colors"
+              className="h-8 rounded-md bg-cyan-700 px-4 text-xs font-medium text-white hover:bg-cyan-800 transition-colors"
             >
               Save
             </button>
@@ -280,7 +292,7 @@ export function DeepFindApp() {
               <X className="size-4" />
             </button>
           </div>
-          <p className="mt-1.5 text-[10px] text-muted-foreground">
+          <p className="mt-2 text-[10px] text-muted-foreground max-w-2xl">
             Get a free key at{" "}
             <a
               href="https://aistudio.google.com/apikey"
@@ -290,72 +302,17 @@ export function DeepFindApp() {
             >
               aistudio.google.com/apikey
             </a>
-            . Your key stays in your browser — never sent to any server except Google&apos;s API.
+            . Your key is stored locally in your browser and only sent to Google&apos;s Gemini API.
           </p>
         </div>
       )}
 
       {/* Main content */}
-      <div className="flex min-h-0 flex-1">
-        {/* Left panel: Controls + File list */}
-        <div className="flex w-80 flex-col border-r border-border">
-          {/* Add files + Search */}
-          <div className="space-y-2 border-b border-border p-3">
-            <div className="flex gap-2">
-              <button
-                onClick={handleFileSelect}
-                disabled={isIndexing}
-                className={cn(
-                  "flex h-9 flex-1 items-center justify-center gap-2 rounded-lg border border-dashed border-border text-xs transition-colors",
-                  isIndexing
-                    ? "cursor-not-allowed opacity-50"
-                    : "hover:border-cyan-500/50 hover:bg-cyan-500/5"
-                )}
-              >
-                {isIndexing ? (
-                  <>
-                    <Loader2 className="size-4 animate-spin" />
-                    Indexing... {Math.round(progress)}%
-                  </>
-                ) : (
-                  <>
-                    <FolderOpen className="size-4" />
-                    Add Files
-                  </>
-                )}
-              </button>
-              {files.length > 0 && (
-                <button
-                  onClick={handleClear}
-                  className="flex h-9 items-center gap-1 rounded-lg border border-border px-2 text-xs text-muted-foreground hover:border-destructive/50 hover:text-destructive transition-colors"
-                >
-                  <Trash2 className="size-3.5" />
-                </button>
-              )}
-            </div>
-
-            <input
-              ref={fileInputRef}
-              type="file"
-              multiple
-              // @ts-expect-error webkitdirectory is non-standard
-              webkitdirectory=""
-              className="hidden"
-              onChange={handleFilesSelected}
-            />
-
-            {/* Progress bar */}
-            {isIndexing && (
-              <div className="h-1 w-full overflow-hidden rounded-full bg-secondary">
-                <div
-                  className="h-full rounded-full bg-cyan-500 transition-all duration-300"
-                  style={{ width: `${progress}%` }}
-                />
-              </div>
-            )}
-
-            {/* Search */}
-            <div className="relative">
+      <div className="flex min-h-0 flex-1 flex-col">
+        {/* Search + Add bar */}
+        <div className="border-b border-border px-5 py-3">
+          <div className="flex gap-3 max-w-3xl mx-auto">
+            <div className="relative flex-1">
               <input
                 type="text"
                 value={searchQuery}
@@ -363,121 +320,192 @@ export function DeepFindApp() {
                 onKeyDown={(e) => {
                   if (e.key === "Enter") handleSearch();
                 }}
-                placeholder="Search by meaning..."
-                disabled={embeddedCount === 0}
+                placeholder={
+                  embeddedCount > 0
+                    ? "Search by meaning across all your files..."
+                    : "Add files to start searching..."
+                }
+                disabled={embeddedCount === 0 || isSearching}
                 className={cn(
-                  "h-9 w-full rounded-lg border border-input bg-background pl-8 pr-3 text-xs",
-                  "focus:border-cyan-500/50 focus:ring-0 focus-visible:ring-0",
+                  "h-10 w-full rounded-lg border border-input bg-background pl-9 pr-4 text-sm",
+                  "focus:border-cyan-500/50 focus:outline-none focus:ring-1 focus:ring-cyan-500/20",
                   embeddedCount === 0 && "cursor-not-allowed opacity-50"
                 )}
               />
-              <Search className="absolute left-2.5 top-2.5 size-4 text-muted-foreground" />
+              <Search className="absolute left-3 top-3 size-4 text-muted-foreground" />
               {isSearching && (
-                <Loader2 className="absolute right-2.5 top-2.5 size-4 animate-spin text-cyan-500" />
+                <Loader2 className="absolute right-3 top-3 size-4 animate-spin text-cyan-500" />
               )}
             </div>
-          </div>
 
-          {/* File list / Search results */}
-          <div className="min-h-0 flex-1 overflow-y-auto">
-            {searchResults ? (
-              <div className="p-2">
-                <div className="mb-2 flex items-center justify-between px-1">
-                  <span className="text-[11px] font-medium text-muted-foreground">
-                    {searchResults.length} results
-                  </span>
-                  <button
-                    onClick={() => setSearchResults(null)}
-                    className="text-[11px] text-muted-foreground hover:text-foreground"
-                  >
-                    Clear
-                  </button>
-                </div>
-                <div className="space-y-1">
-                  {searchResults.map((file) => (
-                    <button
-                      key={file.id}
-                      onClick={() => setSelectedFile(file)}
-                      className={cn(
-                        "flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left transition-colors",
-                        selectedFile?.id === file.id
-                          ? "bg-cyan-500/10 border border-cyan-500/30"
-                          : "hover:bg-secondary/50"
-                      )}
-                    >
-                      <span style={{ color: FILE_TYPE_COLORS[file.type] }}>
-                        {FILE_TYPE_ICONS[file.type]}
-                      </span>
-                      <div className="min-w-0 flex-1">
-                        <p className="truncate text-xs">{file.name}</p>
-                        <p className="truncate text-[10px] text-muted-foreground">
-                          {file.path}
-                        </p>
-                      </div>
-                      <span className="shrink-0 rounded-full bg-cyan-500/10 px-1.5 py-0.5 text-[10px] font-medium text-cyan-400">
-                        {(file.score * 100).toFixed(0)}%
-                      </span>
-                    </button>
-                  ))}
-                </div>
-              </div>
-            ) : (
-              <div className="p-2">
-                <span className="px-1 text-[11px] font-medium text-muted-foreground">
-                  All files ({files.length})
-                </span>
-                <div className="mt-1 space-y-0.5">
-                  {files.map((file) => (
-                    <button
-                      key={file.id}
-                      onClick={() => setSelectedFile(file)}
-                      className={cn(
-                        "flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left transition-colors",
-                        selectedFile?.id === file.id
-                          ? "bg-cyan-500/10 border border-cyan-500/30"
-                          : "hover:bg-secondary/50"
-                      )}
-                    >
-                      <span style={{ color: FILE_TYPE_COLORS[file.type] }}>
-                        {FILE_TYPE_ICONS[file.type]}
-                      </span>
-                      <div className="min-w-0 flex-1">
-                        <p className="truncate text-xs">{file.name}</p>
-                      </div>
-                      {file.embedding ? (
-                        <Eye className="size-3 text-cyan-500/50" />
-                      ) : (
-                        <span className="text-[10px] text-muted-foreground">—</span>
-                      )}
-                    </button>
-                  ))}
-                </div>
-              </div>
+            <button
+              onClick={handleFileSelect}
+              disabled={isIndexing}
+              className={cn(
+                "flex h-10 items-center gap-2 rounded-lg border border-dashed border-border px-4 text-sm transition-colors",
+                isIndexing
+                  ? "cursor-not-allowed opacity-50"
+                  : "hover:border-cyan-500/50 hover:bg-cyan-500/5"
+              )}
+            >
+              {isIndexing ? (
+                <>
+                  <Loader2 className="size-4 animate-spin" />
+                  <span className="text-xs">{Math.round(progress)}%</span>
+                </>
+              ) : (
+                <>
+                  <FolderOpen className="size-4" />
+                  Add Folder
+                </>
+              )}
+            </button>
+
+            {files.length > 0 && (
+              <button
+                onClick={handleClear}
+                className="flex h-10 items-center rounded-lg border border-border px-3 text-muted-foreground hover:border-destructive/50 hover:text-destructive transition-colors"
+                title="Clear all indexed files"
+              >
+                <Trash2 className="size-4" />
+              </button>
             )}
           </div>
+
+          {/* Progress bar */}
+          {isIndexing && (
+            <div className="max-w-3xl mx-auto mt-2">
+              <div className="h-1 w-full overflow-hidden rounded-full bg-secondary">
+                <div
+                  className="h-full rounded-full bg-cyan-500 transition-all duration-300"
+                  style={{ width: `${progress}%` }}
+                />
+              </div>
+              <p className="mt-1 text-[10px] text-muted-foreground truncate">
+                Embedding: {progressFile}
+              </p>
+            </div>
+          )}
         </div>
 
-        {/* Right panel: Visualization */}
-        <div className="flex min-h-0 flex-1 flex-col">
-          {filesWithCoords.length > 1 ? (
-            <EmbeddingMap
-              files={filesWithCoords}
-              selectedFile={selectedFile}
-              searchResults={searchResults}
-              onSelectFile={setSelectedFile}
-              typeColors={FILE_TYPE_COLORS}
-            />
+        <input
+          ref={fileInputRef}
+          type="file"
+          multiple
+          // @ts-expect-error webkitdirectory is non-standard
+          webkitdirectory=""
+          className="hidden"
+          onChange={handleFilesSelected}
+        />
+
+        {/* Results / File list */}
+        <div className="min-h-0 flex-1 overflow-y-auto">
+          {searchResults ? (
+            <div className="max-w-3xl mx-auto p-5">
+              <div className="mb-3 flex items-center justify-between">
+                <h2 className="text-sm font-medium">
+                  {searchResults.length} results for &ldquo;{searchQuery}&rdquo;
+                </h2>
+                <button
+                  onClick={() => {
+                    setSearchResults(null);
+                    setSearchQuery("");
+                  }}
+                  className="text-xs text-muted-foreground hover:text-foreground"
+                >
+                  Clear results
+                </button>
+              </div>
+              <div className="space-y-2">
+                {searchResults.map((file) => (
+                  <div
+                    key={file.id}
+                    className="glass-card flex items-center gap-3 rounded-lg p-3"
+                  >
+                    <span
+                      className="flex size-9 items-center justify-center rounded-md bg-secondary/50"
+                      style={{ color: FILE_TYPE_COLORS[file.type] }}
+                    >
+                      {FILE_TYPE_ICONS[file.type]}
+                    </span>
+                    <div className="min-w-0 flex-1">
+                      <p className="truncate text-sm font-medium">{file.name}</p>
+                      <p className="truncate text-[11px] text-muted-foreground">
+                        {file.path}
+                        <span className="mx-1.5 opacity-40">·</span>
+                        {formatSize(file.size)}
+                      </p>
+                    </div>
+                    <div className="flex items-center gap-2">
+                      <div
+                        className="h-1.5 w-16 overflow-hidden rounded-full bg-secondary"
+                        title={`${(file.score * 100).toFixed(1)}% similarity`}
+                      >
+                        <div
+                          className="h-full rounded-full bg-cyan-500"
+                          style={{ width: `${file.score * 100}%` }}
+                        />
+                      </div>
+                      <span className="shrink-0 text-xs font-medium text-cyan-400">
+                        {(file.score * 100).toFixed(0)}%
+                      </span>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </div>
+          ) : files.length > 0 ? (
+            <div className="max-w-3xl mx-auto p-5">
+              <h2 className="mb-3 text-sm font-medium text-muted-foreground">
+                Indexed files ({files.length})
+              </h2>
+              <div className="space-y-1">
+                {files.map((file) => (
+                  <div
+                    key={file.id}
+                    className="flex items-center gap-3 rounded-md px-3 py-2 hover:bg-secondary/30 transition-colors"
+                  >
+                    <span style={{ color: FILE_TYPE_COLORS[file.type] }}>
+                      {FILE_TYPE_ICONS[file.type]}
+                    </span>
+                    <div className="min-w-0 flex-1">
+                      <p className="truncate text-xs">{file.name}</p>
+                      <p className="truncate text-[10px] text-muted-foreground">
+                        {file.path}
+                      </p>
+                    </div>
+                    <span className="text-[10px] text-muted-foreground">
+                      {formatSize(file.size)}
+                    </span>
+                    {file.embedding ? (
+                      <Eye className="size-3 text-cyan-500/50" />
+                    ) : (
+                      <span className="text-[10px] text-destructive/60">✗</span>
+                    )}
+                  </div>
+                ))}
+              </div>
+            </div>
           ) : (
-            <div className="flex flex-1 items-center justify-center">
-              <div className="text-center">
-                <div className="mx-auto mb-4 flex size-16 items-center justify-center rounded-2xl border border-dashed border-border">
-                  <Search className="size-6 text-muted-foreground" />
+            <div className="flex flex-1 items-center justify-center h-full">
+              <div className="text-center px-4">
+                <div className="mx-auto mb-5 flex size-20 items-center justify-center rounded-2xl border border-dashed border-border">
+                  <Search className="size-8 text-muted-foreground/50" />
                 </div>
-                <p className="text-sm text-muted-foreground">
-                  Add files to see them in embedding space
+                <h2 className="text-lg font-medium mb-2">Search your files by meaning</h2>
+                <p className="text-sm text-muted-foreground max-w-md mx-auto mb-6">
+                  Point DeepFind at a folder. It embeds every file — documents, images, audio, video, PDFs — into a unified semantic space using Gemini Embedding 2.
                 </p>
-                <p className="mt-1 text-[11px] text-muted-foreground/60">
-                  Files are embedded with Gemini Embedding 2 and projected with UMAP
+                <button
+                  onClick={handleFileSelect}
+                  className="inline-flex items-center gap-2 rounded-lg bg-cyan-700 px-5 py-2.5 text-sm font-medium text-white hover:bg-cyan-800 transition-colors"
+                >
+                  <FolderOpen className="size-4" />
+                  Choose a folder
+                  <ArrowRight className="size-4" />
+                </button>
+                <p className="mt-4 text-[10px] text-muted-foreground/50">
+                  Your files never leave your machine — only embeddings are generated via Google&apos;s API
                 </p>
               </div>
             </div>
@@ -488,7 +516,7 @@ export function DeepFindApp() {
       {/* Error toast */}
       {error && (
         <div className="absolute bottom-4 left-1/2 z-50 -translate-x-1/2">
-          <div className="flex items-center gap-2 rounded-lg border border-destructive/40 bg-destructive/10 px-3 py-2 backdrop-blur-sm">
+          <div className="flex items-center gap-2 rounded-lg border border-destructive/40 bg-destructive/10 px-4 py-2.5 backdrop-blur-sm">
             <p className="text-xs text-destructive">{error}</p>
             <button
               onClick={() => setError(null)}

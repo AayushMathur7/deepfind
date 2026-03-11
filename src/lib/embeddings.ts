@@ -11,7 +11,6 @@ export type FileEntry = {
   embedding?: number[];
   umapX?: number;
   umapY?: number;
-  umapZ?: number;
 };
 
 export type IndexState = {
@@ -55,6 +54,33 @@ const MIME_MAP: Record<string, FileEntry["type"]> = {
   ".pdf": "pdf",
 };
 
+const MIME_TYPES: Record<string, string> = {
+  ".txt": "text/plain",
+  ".md": "text/markdown",
+  ".json": "application/json",
+  ".csv": "text/csv",
+  ".tsx": "text/plain",
+  ".ts": "text/plain",
+  ".js": "text/javascript",
+  ".py": "text/x-python",
+  ".html": "text/html",
+  ".css": "text/css",
+  ".png": "image/png",
+  ".jpg": "image/jpeg",
+  ".jpeg": "image/jpeg",
+  ".gif": "image/gif",
+  ".webp": "image/webp",
+  ".mp3": "audio/mpeg",
+  ".wav": "audio/wav",
+  ".ogg": "audio/ogg",
+  ".flac": "audio/flac",
+  ".m4a": "audio/mp4",
+  ".mp4": "video/mp4",
+  ".mov": "video/quicktime",
+  ".webm": "video/webm",
+  ".pdf": "application/pdf",
+};
+
 export function getFileType(filename: string): FileEntry["type"] {
   const ext = filename.slice(filename.lastIndexOf(".")).toLowerCase();
   return MIME_MAP[ext] || "unknown";
@@ -62,69 +88,99 @@ export function getFileType(filename: string): FileEntry["type"] {
 
 export function getMimeType(filename: string): string {
   const ext = filename.slice(filename.lastIndexOf(".")).toLowerCase();
-  const mimes: Record<string, string> = {
-    ".txt": "text/plain",
-    ".md": "text/markdown",
-    ".json": "application/json",
-    ".csv": "text/csv",
-    ".tsx": "text/plain",
-    ".ts": "text/plain",
-    ".js": "text/javascript",
-    ".py": "text/x-python",
-    ".html": "text/html",
-    ".css": "text/css",
-    ".png": "image/png",
-    ".jpg": "image/jpeg",
-    ".jpeg": "image/jpeg",
-    ".gif": "image/gif",
-    ".webp": "image/webp",
-    ".mp3": "audio/mpeg",
-    ".wav": "audio/wav",
-    ".ogg": "audio/ogg",
-    ".flac": "audio/flac",
-    ".m4a": "audio/mp4",
-    ".mp4": "video/mp4",
-    ".mov": "video/quicktime",
-    ".webm": "video/webm",
-    ".pdf": "application/pdf",
-  };
-  return mimes[ext] || "application/octet-stream";
+  return MIME_TYPES[ext] || "application/octet-stream";
 }
 
+/**
+ * Embed text content using Gemini Embedding 2.
+ * Uses the `contents` field with a plain string for text-only embedding.
+ */
 export async function embedText(
-  client: GoogleGenAI,
+  ai: GoogleGenAI,
   text: string
 ): Promise<number[]> {
-  const result = await client.models.embedContent({
+  const response = await ai.models.embedContent({
     model: MODEL,
-    contents: [text],
+    contents: text,
   });
-  return result.embeddings?.[0]?.values ?? [];
+  return response.embeddings?.[0]?.values ?? [];
 }
 
+/**
+ * Embed a multimodal file (image, audio, video, PDF) using Gemini Embedding 2.
+ * Uses the `contents` field with a parts array containing inlineData.
+ * 
+ * Constraints from docs:
+ * - Images: up to 6 per request, PNG/JPEG
+ * - Video: up to 128 seconds, MP4/MOV
+ * - Audio: up to 80 seconds, MP3/WAV
+ * - PDF: up to 6 pages
+ * - Max 8192 input tokens total per request
+ */
 export async function embedFile(
-  client: GoogleGenAI,
+  ai: GoogleGenAI,
   fileBytes: Uint8Array,
   mimeType: string
 ): Promise<number[]> {
-  const result = await client.models.embedContent({
+  const base64Data = uint8ToBase64(fileBytes);
+
+  const response = await ai.models.embedContent({
     model: MODEL,
     contents: [
       {
-        inlineData: {
-          data: uint8ToBase64(fileBytes),
-          mimeType,
-        },
+        parts: [
+          {
+            inlineData: {
+              data: base64Data,
+              mimeType,
+            },
+          },
+        ],
       },
     ],
   });
-  return result.embeddings?.[0]?.values ?? [];
+  return response.embeddings?.[0]?.values ?? [];
+}
+
+/**
+ * Embed text + file together (interleaved multimodal input).
+ * Useful for providing context alongside a file.
+ */
+export async function embedTextAndFile(
+  ai: GoogleGenAI,
+  text: string,
+  fileBytes: Uint8Array,
+  mimeType: string
+): Promise<number[]> {
+  const base64Data = uint8ToBase64(fileBytes);
+
+  const response = await ai.models.embedContent({
+    model: MODEL,
+    contents: [
+      {
+        parts: [
+          { text },
+          {
+            inlineData: {
+              data: base64Data,
+              mimeType,
+            },
+          },
+        ],
+      },
+    ],
+  });
+  return response.embeddings?.[0]?.values ?? [];
 }
 
 function uint8ToBase64(bytes: Uint8Array): string {
   let binary = "";
-  for (let i = 0; i < bytes.length; i++) {
-    binary += String.fromCharCode(bytes[i]);
+  const chunkSize = 8192;
+  for (let i = 0; i < bytes.length; i += chunkSize) {
+    const chunk = bytes.subarray(i, i + chunkSize);
+    for (let j = 0; j < chunk.length; j++) {
+      binary += String.fromCharCode(chunk[j]);
+    }
   }
   return btoa(binary);
 }
